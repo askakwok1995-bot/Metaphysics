@@ -53,6 +53,19 @@ type EnergyCardTheme = {
   borderSelected: string
 }
 
+type GeminiPredictResponse = {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string
+      }>
+    }
+  }>
+  error?: {
+    message?: string
+  }
+}
+
 const cards: InsightCard[] = [
   {
     icon: Coins,
@@ -232,6 +245,35 @@ ${basicInfo.name || '旅人'}，你的命局中潜藏着极强的能量。你在
 你目前正处于“${userAnswers.q1 || '探索期'}”的状态，并且你察觉到最大的卡点在于“${userAnswers.q4 || '目前的局限'}”。不要焦虑，这并非你能力不足，而是流年能量的正常蛰伏。
 ## 2026 锦囊
 面对未来的财富机会，请继续保持你“${userAnswers.q3 || '独特'}”的行动风格。今年你的财帛宫有异动，建议顺势而为，积蓄力量，属于你的旷野即将展开。`
+}
+
+async function fetchReport(prompt: string) {
+  const response = await fetch('/api/predict', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ prompt }),
+  })
+
+  const data = (await response.json()) as GeminiPredictResponse
+
+  if (!response.ok) {
+    throw new Error(data.error?.message || 'Gemini 请求失败')
+  }
+
+  const report = data.candidates
+    ?.flatMap((candidate) => candidate.content?.parts ?? [])
+    .map((part) => part.text?.trim() ?? '')
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+
+  if (!report) {
+    throw new Error('Gemini 返回内容为空')
+  }
+
+  return report
 }
 
 function parseReportSections(report: string) {
@@ -1664,12 +1706,51 @@ function ResultView({
   onRestart: () => void
 }) {
   const prompt = buildReportPrompt(basicInfo, userAnswers)
-  const report = buildMockReport(basicInfo, userAnswers)
-  const sections = parseReportSections(report)
+  const fallbackReport = buildMockReport(basicInfo, userAnswers)
+  const [report, setReport] = useState('')
+  const [reportError, setReportError] = useState('')
+  const [isFetchingReport, setIsFetchingReport] = useState(true)
+  const sections = parseReportSections(report || (reportError ? fallbackReport : ''))
 
   useEffect(() => {
     console.log(prompt)
   }, [prompt])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadReport = async () => {
+      setIsFetchingReport(true)
+      setReport('')
+      setReportError('')
+
+      try {
+        const nextReport = await fetchReport(prompt)
+
+        if (!cancelled) {
+          setReport(nextReport)
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '报告生成失败'
+        console.error('Gemini report request failed:', message)
+
+        if (!cancelled) {
+          setReportError(message)
+          setReport(fallbackReport)
+        }
+      } finally {
+        if (!cancelled) {
+          setIsFetchingReport(false)
+        }
+      }
+    }
+
+    void loadReport()
+
+    return () => {
+      cancelled = true
+    }
+  }, [fallbackReport, prompt])
 
   return (
     <motion.section
@@ -1707,28 +1788,47 @@ function ResultView({
         </div>
 
         <div className="mt-10">
-          {sections.map((section, index) => (
+          {isFetchingReport ? (
             <motion.article
-              key={section.title}
-              className="mb-5 rounded-[24px] border border-white/10 bg-white/[0.02] p-6 backdrop-blur-3xl"
+              className="rounded-[24px] border border-white/10 bg-white/[0.02] p-6 backdrop-blur-3xl"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.08 * index, duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
             >
-              <h3
-                className="text-[1.15rem] font-semibold text-amber-200"
-                style={{
-                  fontFamily:
-                    "'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', 'Songti SC', 'STSong', serif",
-                }}
-              >
-                {section.title}
-              </h3>
-              <p className="mt-4 whitespace-pre-line text-[14px] leading-8 tracking-[0.04em] text-zinc-300">
-                {section.content}
+              <div className="text-[1.15rem] font-semibold text-amber-200">命盘回响正在落纸</div>
+              <p className="mt-4 text-[14px] leading-8 tracking-[0.04em] text-zinc-400">
+                AI 命理师正在整理你的先天气局与破局线索，请稍候片刻。
               </p>
             </motion.article>
-          ))}
+          ) : (
+            sections.map((section, index) => (
+              <motion.article
+                key={section.title}
+                className="mb-5 rounded-[24px] border border-white/10 bg-white/[0.02] p-6 backdrop-blur-3xl"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.08 * index, duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+              >
+                <h3
+                  className="text-[1.15rem] font-semibold text-amber-200"
+                  style={{
+                    fontFamily:
+                      "'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', 'Songti SC', 'STSong', serif",
+                  }}
+                >
+                  {section.title}
+                </h3>
+                <p className="mt-4 whitespace-pre-line text-[14px] leading-8 tracking-[0.04em] text-zinc-300">
+                  {section.content}
+                </p>
+              </motion.article>
+            ))
+          )}
+          {reportError ? (
+            <p className="mt-1 text-[12px] leading-6 tracking-[0.08em] text-amber-200/80">
+              当前展示的是本地演示稿，原因：{reportError}
+            </p>
+          ) : null}
         </div>
 
         <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
