@@ -7,8 +7,10 @@ import {
   ChevronDown,
   ChevronLeft,
   Coins,
+  Copy,
   Heart,
   Lock,
+  RefreshCcw,
   Sparkles,
   Stars,
   type LucideIcon,
@@ -235,7 +237,11 @@ const minuteOptions: SelectOption[] = Array.from({ length: 60 }, (_, index) => {
 function buildReportPrompt(basicInfo: BasicInfo, userAnswers: UserAnswers) {
   return `【系统提示】你是一位精通东方命理与现代商业心理学的顾问，擅长将命局结构、流年变化与商业决策结合，输出兼具神秘感与可执行性的洞察。
 【用户数据】姓名:${basicInfo.name || '未命名'}, 状态:${userAnswers.q1 || '未知'}, 能量:${userAnswers.q2 || '未知'}, 行动风格:${userAnswers.q3 || '未知'}, 瓶颈:${userAnswers.q4 || '未知'}, 性别:${basicInfo.gender || '未知'}, 历法:${basicInfo.calendarMode}, 出生日期:${basicInfo.birthDate}, 出生时刻:${basicInfo.birthTime}。
-请按 ## 先天气局、## 当下破局、## 2026锦囊 输出。`
+【输出规则】
+1. 必须且只能输出三个二级标题段落，标题依次为：## 先天气局、## 当下破局、## 2026 锦囊。
+2. 每个标题下直接写正文，不要增加三级标题、编号、列表或额外说明。
+3. 严禁输出任何开场白、解释语、总结语、祝福语、免责声明或结尾落款。
+4. 不要重复标题，不要输出 Markdown 代码块，不要输出除这三个标题外的任何其他结构。`
 }
 
 function buildMockReport(basicInfo: BasicInfo, userAnswers: UserAnswers) {
@@ -248,37 +254,51 @@ ${basicInfo.name || '旅人'}，你的命局中潜藏着极强的能量。你在
 }
 
 async function fetchReport(prompt: string) {
-  const response = await fetch('/api/predict', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ prompt }),
-  })
+  const controller = new AbortController()
+  const timeoutId = window.setTimeout(() => controller.abort(), 12_000)
 
-  const data = (await response.json()) as GeminiPredictResponse
+  try {
+    const response = await fetch('/api/predict', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ prompt }),
+      signal: controller.signal,
+    })
 
-  if (!response.ok) {
-    throw new Error(data.error?.message || 'Gemini 请求失败')
+    const data = (await response.json()) as GeminiPredictResponse
+
+    if (!response.ok) {
+      throw new Error(data.error?.message || 'Gemini 请求失败')
+    }
+
+    const report = data.candidates
+      ?.flatMap((candidate) => candidate.content?.parts ?? [])
+      .map((part) => part.text?.trim() ?? '')
+      .filter(Boolean)
+      .join('\n')
+      .trim()
+
+    if (!report) {
+      throw new Error('Gemini 返回内容为空')
+    }
+
+    return report
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('能量链路波动，请重试')
+    }
+
+    throw error
+  } finally {
+    window.clearTimeout(timeoutId)
   }
-
-  const report = data.candidates
-    ?.flatMap((candidate) => candidate.content?.parts ?? [])
-    .map((part) => part.text?.trim() ?? '')
-    .filter(Boolean)
-    .join('\n')
-    .trim()
-
-  if (!report) {
-    throw new Error('Gemini 返回内容为空')
-  }
-
-  return report
 }
 
 function parseReportSections(report: string) {
   return report
-    .split('## ')
+    .split('##')
     .map((section) => section.trim())
     .filter(Boolean)
     .map((section) => {
@@ -1707,10 +1727,13 @@ function ResultView({
 }) {
   const prompt = buildReportPrompt(basicInfo, userAnswers)
   const fallbackReport = buildMockReport(basicInfo, userAnswers)
-  const [report, setReport] = useState('')
+  const [reportText, setReportText] = useState('')
   const [reportError, setReportError] = useState('')
   const [isFetchingReport, setIsFetchingReport] = useState(true)
-  const sections = parseReportSections(report || (reportError ? fallbackReport : ''))
+  const [requestVersion, setRequestVersion] = useState(0)
+  const [copyFeedback, setCopyFeedback] = useState('')
+  const resolvedReportText = reportText || (reportError ? fallbackReport : '')
+  const sections = parseReportSections(resolvedReportText)
 
   useEffect(() => {
     console.log(prompt)
@@ -1721,14 +1744,15 @@ function ResultView({
 
     const loadReport = async () => {
       setIsFetchingReport(true)
-      setReport('')
+      setReportText('')
       setReportError('')
+      setCopyFeedback('')
 
       try {
         const nextReport = await fetchReport(prompt)
 
         if (!cancelled) {
-          setReport(nextReport)
+          setReportText(nextReport)
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : '报告生成失败'
@@ -1736,7 +1760,7 @@ function ResultView({
 
         if (!cancelled) {
           setReportError(message)
-          setReport(fallbackReport)
+          setReportText('')
         }
       } finally {
         if (!cancelled) {
@@ -1750,7 +1774,34 @@ function ResultView({
     return () => {
       cancelled = true
     }
-  }, [fallbackReport, prompt])
+  }, [prompt, requestVersion])
+
+  useEffect(() => {
+    if (!copyFeedback) return
+
+    const timer = window.setTimeout(() => {
+      setCopyFeedback('')
+    }, 1800)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [copyFeedback])
+
+  const regenerateReport = () => {
+    setRequestVersion((prev) => prev + 1)
+  }
+
+  const copyReport = async () => {
+    const textToCopy = sections.length > 0 ? resolvedReportText : fallbackReport
+
+    try {
+      await navigator.clipboard.writeText(textToCopy)
+      setCopyFeedback('报告已复制')
+    } catch {
+      setCopyFeedback('复制失败，请稍后再试')
+    }
+  }
 
   return (
     <motion.section
@@ -1795,9 +1846,21 @@ function ResultView({
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
             >
-              <div className="text-[1.15rem] font-semibold text-amber-200">命盘回响正在落纸</div>
-              <p className="mt-4 text-[14px] leading-8 tracking-[0.04em] text-zinc-400">
+              <div className="text-[1.15rem] font-semibold text-amber-200">正在读取星象数据...</div>
+              <p className="mt-4 text-[14px] leading-relaxed tracking-[0.05em] text-zinc-400">
                 AI 命理师正在整理你的先天气局与破局线索，请稍候片刻。
+              </p>
+            </motion.article>
+          ) : sections.length === 0 ? (
+            <motion.article
+              className="rounded-[24px] border border-white/10 bg-white/[0.02] p-6 backdrop-blur-3xl"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <div className="text-[1.15rem] font-semibold text-amber-200">正在读取星象数据...</div>
+              <p className="mt-4 text-[14px] leading-relaxed tracking-[0.05em] text-zinc-400">
+                当前报告尚未成形，请稍后重新生成一次。
               </p>
             </motion.article>
           ) : (
@@ -1818,7 +1881,7 @@ function ResultView({
                 >
                   {section.title}
                 </h3>
-                <p className="mt-4 whitespace-pre-line text-[14px] leading-8 tracking-[0.04em] text-zinc-300">
+                <p className="mt-4 whitespace-pre-line text-[14px] leading-relaxed tracking-[0.05em] text-zinc-300">
                   {section.content}
                 </p>
               </motion.article>
@@ -1831,7 +1894,7 @@ function ResultView({
           ) : null}
         </div>
 
-        <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <motion.button
             type="button"
             onClick={onRestart}
@@ -1843,11 +1906,28 @@ function ResultView({
           </motion.button>
           <motion.button
             type="button"
-            onClick={() => console.log('保存专属海报')}
+            onClick={regenerateReport}
+            whileTap={{ scale: 0.95 }}
+            className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3.5 text-sm tracking-[0.12em] text-zinc-200 transition"
+            disabled={isFetchingReport}
+          >
+            <span className="inline-flex items-center gap-2">
+              <RefreshCcw className="h-4 w-4" />
+              {isFetchingReport ? '生成中...' : '重新生成'}
+            </span>
+          </motion.button>
+          <motion.button
+            type="button"
+            onClick={() => {
+              void copyReport()
+            }}
             whileTap={{ scale: 0.95 }}
             className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3.5 text-sm tracking-[0.12em] text-zinc-200 transition"
           >
-            保存专属海报
+            <span className="inline-flex items-center gap-2">
+              <Copy className="h-4 w-4" />
+              {copyFeedback || '复制报告'}
+            </span>
           </motion.button>
         </div>
       </motion.div>
