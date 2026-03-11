@@ -7,7 +7,7 @@ import {
   ChevronDown,
   ChevronLeft,
   Coins,
-  Copy,
+  Download,
   Heart,
   Lock,
   RefreshCcw,
@@ -66,6 +66,12 @@ type GeminiPredictResponse = {
   error?: {
     message?: string
   }
+}
+
+type ReportParts = {
+  section1: string
+  section2: string
+  section3: string
 }
 
 const cards: InsightCard[] = [
@@ -235,22 +241,18 @@ const minuteOptions: SelectOption[] = Array.from({ length: 60 }, (_, index) => {
 })
 
 function buildReportPrompt(basicInfo: BasicInfo, userAnswers: UserAnswers) {
-  return `【系统提示】你是一位精通东方命理与现代商业心理学的顾问，擅长将命局结构、流年变化与商业决策结合，输出兼具神秘感与可执行性的洞察。
-【用户数据】姓名:${basicInfo.name || '未命名'}, 状态:${userAnswers.q1 || '未知'}, 能量:${userAnswers.q2 || '未知'}, 行动风格:${userAnswers.q3 || '未知'}, 瓶颈:${userAnswers.q4 || '未知'}, 性别:${basicInfo.gender || '未知'}, 历法:${basicInfo.calendarMode}, 出生日期:${basicInfo.birthDate}, 出生时刻:${basicInfo.birthTime}。
-【输出规则】
-1. 必须且只能输出三个二级标题段落，标题依次为：## 先天气局、## 当下破局、## 2026 锦囊。
-2. 每个标题下直接写正文，不要增加三级标题、编号、列表或额外说明。
-3. 严禁输出任何开场白、解释语、总结语、祝福语、免责声明或结尾落款。
-4. 不要重复标题，不要输出 Markdown 代码块，不要输出除这三个标题外的任何其他结构。`
-}
+  return `请基于以下用户信息生成一份命理与事业结合的专属推演报告。
+姓名:${basicInfo.name || '未命名'}
+当前状态:${userAnswers.q1 || '未知'}
+偏好能量:${userAnswers.q2 || '未知'}
+行动风格:${userAnswers.q3 || '未知'}
+最大瓶颈:${userAnswers.q4 || '未知'}
+性别:${basicInfo.gender || '未知'}
+历法:${basicInfo.calendarMode}
+出生日期:${basicInfo.birthDate}
+出生时刻:${basicInfo.birthTime}
 
-function buildMockReport(basicInfo: BasicInfo, userAnswers: UserAnswers) {
-  return `## 先天气局
-${basicInfo.name || '旅人'}，你的命局中潜藏着极强的能量。你在潜意识中被“${userAnswers.q2 || '某种神秘能量'}”吸引，这暗示了你天生具备打破常规的直觉力。
-## 当下破局
-你目前正处于“${userAnswers.q1 || '探索期'}”的状态，并且你察觉到最大的卡点在于“${userAnswers.q4 || '目前的局限'}”。不要焦虑，这并非你能力不足，而是流年能量的正常蛰伏。
-## 2026 锦囊
-面对未来的财富机会，请继续保持你“${userAnswers.q3 || '独特'}”的行动风格。今年你的财帛宫有异动，建议顺势而为，积蓄力量，属于你的旷野即将展开。`
+请重点围绕先天气局、当下破局、2026 事业与财运建议展开，内容要具体、细腻，兼具命理术语、心理洞察和现实行动感。`
 }
 
 async function fetchReport(prompt: string) {
@@ -273,21 +275,24 @@ async function fetchReport(prompt: string) {
       throw new Error(data.error?.message || 'Gemini 请求失败')
     }
 
-    const report = data.candidates
+    const reportText = data.candidates
       ?.flatMap((candidate) => candidate.content?.parts ?? [])
       .map((part) => part.text?.trim() ?? '')
       .filter(Boolean)
       .join('\n')
       .trim()
 
-    if (!report) {
+    if (!reportText) {
       throw new Error('Gemini 返回内容为空')
     }
 
-    return report
+    return {
+      rawText: reportText,
+      parts: extractReportParts(reportText),
+    }
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new Error('能量链路波动，请重试')
+      throw new Error('星象感应波动，请重新推演')
     }
 
     throw error
@@ -296,18 +301,77 @@ async function fetchReport(prompt: string) {
   }
 }
 
-function parseReportSections(report: string) {
-  return report
-    .split('##')
-    .map((section) => section.trim())
-    .filter(Boolean)
-    .map((section) => {
-      const [title, ...contentLines] = section.split('\n')
-      return {
-        title: title.trim(),
-        content: contentLines.join('\n').trim(),
+function normalizeReportPart(value: unknown) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function extractReportParts(reportText: string): ReportParts {
+  const emptyParts: ReportParts = { section1: '', section2: '', section3: '' }
+  const trimmedText = reportText.trim()
+
+  if (!trimmedText) {
+    return emptyParts
+  }
+
+  const jsonCandidates = [trimmedText]
+  const jsonStart = trimmedText.indexOf('{')
+  const jsonEnd = trimmedText.lastIndexOf('}')
+
+  if (jsonStart !== -1 && jsonEnd > jsonStart) {
+    jsonCandidates.push(trimmedText.slice(jsonStart, jsonEnd + 1))
+  }
+
+  for (const candidate of jsonCandidates) {
+    try {
+      const parsed = JSON.parse(candidate) as Partial<ReportParts>
+      const nextParts = {
+        section1: normalizeReportPart(parsed.section1),
+        section2: normalizeReportPart(parsed.section2),
+        section3: normalizeReportPart(parsed.section3),
       }
-    })
+
+      if (nextParts.section1 || nextParts.section2 || nextParts.section3) {
+        return nextParts
+      }
+    } catch {
+      continue
+    }
+  }
+
+  const captureJsonField = (key: keyof ReportParts) => {
+    const match = trimmedText.match(new RegExp(`"${key}"\\s*:\\s*"([\\s\\S]*?)"(?:\\s*,|\\s*})`))
+    if (!match) return ''
+
+    return match[1]
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\\\/g, '\\')
+      .trim()
+  }
+
+  const jsonLikeParts = {
+    section1: captureJsonField('section1'),
+    section2: captureJsonField('section2'),
+    section3: captureJsonField('section3'),
+  }
+
+  if (jsonLikeParts.section1 || jsonLikeParts.section2 || jsonLikeParts.section3) {
+    return jsonLikeParts
+  }
+
+  const markdownSections = trimmedText.split(/##\s*/).map((section) => section.trim()).filter(Boolean)
+  const markdownParts: ReportParts = { section1: '', section2: '', section3: '' }
+
+  for (const section of markdownSections) {
+    const [title, ...contentLines] = section.split('\n')
+    const content = contentLines.join('\n').trim()
+
+    if (title.includes('先天气局')) markdownParts.section1 = content
+    if (title.includes('当下破局')) markdownParts.section2 = content
+    if (title.includes('2026')) markdownParts.section3 = content
+  }
+
+  return markdownParts
 }
 
 function getDayOptions(year: string, month: string, calendarMode: CalendarMode): SelectOption[] {
@@ -1563,7 +1627,7 @@ function QuizView({
   )
 }
 
-function ProcessingView({ onProcessComplete }: { onProcessComplete: () => void }) {
+function ProcessingView() {
   const [currentStepIndex, setCurrentStepIndex] = useState(0)
 
   useEffect(() => {
@@ -1573,14 +1637,6 @@ function ProcessingView({ onProcessComplete }: { onProcessComplete: () => void }
 
     return () => window.clearInterval(stepInterval)
   }, [])
-
-  useEffect(() => {
-    const processTimer = window.setTimeout(() => {
-      onProcessComplete()
-    }, 9200)
-
-    return () => window.clearTimeout(processTimer)
-  }, [onProcessComplete])
 
   return (
     <motion.section
@@ -1718,90 +1774,36 @@ function ProcessingView({ onProcessComplete }: { onProcessComplete: () => void }
 
 function ResultView({
   basicInfo,
-  userAnswers,
+  reportParts,
+  reportError,
+  onRetry,
   onRestart,
 }: {
   basicInfo: BasicInfo
-  userAnswers: UserAnswers
+  reportParts: ReportParts
+  reportError: string
+  onRetry: () => void
   onRestart: () => void
 }) {
-  const prompt = buildReportPrompt(basicInfo, userAnswers)
-  const fallbackReport = buildMockReport(basicInfo, userAnswers)
-  const [reportText, setReportText] = useState('')
-  const [reportError, setReportError] = useState('')
-  const [isFetchingReport, setIsFetchingReport] = useState(true)
-  const [requestVersion, setRequestVersion] = useState(0)
-  const [copyFeedback, setCopyFeedback] = useState('')
-  const resolvedReportText = reportText || (reportError ? fallbackReport : '')
-  const sections = parseReportSections(resolvedReportText)
+  const [saveFeedback, setSaveFeedback] = useState('')
+  const sections = [
+    { title: '先天气局', tag: '命格', content: reportParts.section1 },
+    { title: '当下破局', tag: '时运', content: reportParts.section2 },
+    { title: '2026 锦囊', tag: '显化', content: reportParts.section3 },
+  ]
+  const hasReportContent = sections.some((section) => section.content)
 
   useEffect(() => {
-    console.log(prompt)
-  }, [prompt])
-
-  useEffect(() => {
-    let cancelled = false
-
-    const loadReport = async () => {
-      setIsFetchingReport(true)
-      setReportText('')
-      setReportError('')
-      setCopyFeedback('')
-
-      try {
-        const nextReport = await fetchReport(prompt)
-
-        if (!cancelled) {
-          setReportText(nextReport)
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : '报告生成失败'
-        console.error('Gemini report request failed:', message)
-
-        if (!cancelled) {
-          setReportError(message)
-          setReportText('')
-        }
-      } finally {
-        if (!cancelled) {
-          setIsFetchingReport(false)
-        }
-      }
-    }
-
-    void loadReport()
-
-    return () => {
-      cancelled = true
-    }
-  }, [prompt, requestVersion])
-
-  useEffect(() => {
-    if (!copyFeedback) return
+    if (!saveFeedback) return
 
     const timer = window.setTimeout(() => {
-      setCopyFeedback('')
+      setSaveFeedback('')
     }, 1800)
 
     return () => {
       window.clearTimeout(timer)
     }
-  }, [copyFeedback])
-
-  const regenerateReport = () => {
-    setRequestVersion((prev) => prev + 1)
-  }
-
-  const copyReport = async () => {
-    const textToCopy = sections.length > 0 ? resolvedReportText : fallbackReport
-
-    try {
-      await navigator.clipboard.writeText(textToCopy)
-      setCopyFeedback('报告已复制')
-    } catch {
-      setCopyFeedback('复制失败，请稍后再试')
-    }
-  }
+  }, [saveFeedback])
 
   return (
     <motion.section
@@ -1831,7 +1833,7 @@ function ResultView({
               textShadow: '0 0 18px rgba(245, 196, 118, 0.12)',
             }}
           >
-            致 {basicInfo.name || '你'} 的专属洞察
+            致 {basicInfo.name || '你'} 的专属破局报告
           </h2>
           <p className="mx-auto mt-4 max-w-[18rem] text-[12.5px] leading-7 tracking-[0.12em] text-zinc-500">
             命局已落纸，接下来请在静默中阅读这份只属于你的回响。
@@ -1839,7 +1841,7 @@ function ResultView({
         </div>
 
         <div className="mt-10">
-          {isFetchingReport ? (
+          {!hasReportContent ? (
             <motion.article
               className="rounded-[24px] border border-white/10 bg-white/[0.02] p-6 backdrop-blur-3xl"
               initial={{ opacity: 0, y: 20 }}
@@ -1848,20 +1850,17 @@ function ResultView({
             >
               <div className="text-[1.15rem] font-semibold text-amber-200">正在读取星象数据...</div>
               <p className="mt-4 text-[14px] leading-relaxed tracking-[0.05em] text-zinc-400">
-                AI 命理师正在整理你的先天气局与破局线索，请稍候片刻。
+                {reportError || '当前报告尚未成形，请稍后重新推演。'}
               </p>
-            </motion.article>
-          ) : sections.length === 0 ? (
-            <motion.article
-              className="rounded-[24px] border border-white/10 bg-white/[0.02] p-6 backdrop-blur-3xl"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className="text-[1.15rem] font-semibold text-amber-200">正在读取星象数据...</div>
-              <p className="mt-4 text-[14px] leading-relaxed tracking-[0.05em] text-zinc-400">
-                当前报告尚未成形，请稍后重新生成一次。
-              </p>
+              <motion.button
+                type="button"
+                onClick={onRetry}
+                whileTap={{ scale: 0.95 }}
+                className="mt-5 inline-flex items-center justify-center gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm tracking-[0.12em] text-amber-200 transition"
+              >
+                <RefreshCcw className="h-4 w-4" />
+                重新推演
+              </motion.button>
             </motion.article>
           ) : (
             sections.map((section, index) => (
@@ -1873,13 +1872,16 @@ function ResultView({
                 transition={{ delay: 0.08 * index, duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
               >
                 <h3
-                  className="text-[1.15rem] font-semibold text-amber-200"
+                  className="flex items-center gap-2 text-[1.15rem] font-semibold text-amber-200"
                   style={{
                     fontFamily:
                       "'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', 'Songti SC', 'STSong', serif",
                   }}
                 >
-                  {section.title}
+                  <span>{section.title}</span>
+                  <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium tracking-[0.16em] text-amber-200/90">
+                    {section.tag}
+                  </span>
                 </h3>
                 <p className="mt-4 whitespace-pre-line text-[14px] leading-relaxed tracking-[0.05em] text-zinc-300">
                   {section.content}
@@ -1887,14 +1889,9 @@ function ResultView({
               </motion.article>
             ))
           )}
-          {reportError ? (
-            <p className="mt-1 text-[12px] leading-6 tracking-[0.08em] text-amber-200/80">
-              当前展示的是本地演示稿，原因：{reportError}
-            </p>
-          ) : null}
         </div>
 
-        <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <motion.button
             type="button"
             onClick={onRestart}
@@ -1906,27 +1903,16 @@ function ResultView({
           </motion.button>
           <motion.button
             type="button"
-            onClick={regenerateReport}
-            whileTap={{ scale: 0.95 }}
-            className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3.5 text-sm tracking-[0.12em] text-zinc-200 transition"
-            disabled={isFetchingReport}
-          >
-            <span className="inline-flex items-center gap-2">
-              <RefreshCcw className="h-4 w-4" />
-              {isFetchingReport ? '生成中...' : '重新生成'}
-            </span>
-          </motion.button>
-          <motion.button
-            type="button"
             onClick={() => {
-              void copyReport()
+              console.log('保存海报')
+              setSaveFeedback('海报功能待开发')
             }}
             whileTap={{ scale: 0.95 }}
             className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3.5 text-sm tracking-[0.12em] text-zinc-200 transition"
           >
             <span className="inline-flex items-center gap-2">
-              <Copy className="h-4 w-4" />
-              {copyFeedback || '复制报告'}
+              <Download className="h-4 w-4" />
+              {saveFeedback || '保存海报'}
             </span>
           </motion.button>
         </div>
@@ -1953,6 +1939,13 @@ function App() {
   const [userAnswers, setUserAnswers] = useState<UserAnswers>({})
   const [activeAnswer, setActiveAnswer] = useState<string | null>(null)
   const [isAnswerTransitioning, setIsAnswerTransitioning] = useState(false)
+  const [reportParts, setReportParts] = useState<ReportParts>({
+    section1: '',
+    section2: '',
+    section3: '',
+  })
+  const [reportError, setReportError] = useState('')
+  const [reportRequestNonce, setReportRequestNonce] = useState(0)
 
   const basicInfo = {
     name,
@@ -1992,6 +1985,57 @@ function App() {
     setUserAnswers({})
     setActiveAnswer(null)
     setIsAnswerTransitioning(false)
+    setReportParts({ section1: '', section2: '', section3: '' })
+    setReportError('')
+    setReportRequestNonce(0)
+  }
+
+  useEffect(() => {
+    if (currentView !== 'processing') return
+
+    let cancelled = false
+
+    const runProcessing = async () => {
+      const ritualDelay = new Promise((resolve) => {
+        window.setTimeout(resolve, 5200)
+      })
+      const prompt = buildReportPrompt(basicInfo, userAnswers)
+
+      console.log(prompt)
+
+      try {
+        const [reportPayload] = await Promise.all([fetchReport(prompt), ritualDelay])
+
+        if (!cancelled) {
+          setReportParts(reportPayload.parts)
+          setReportError('')
+          setCurrentView('result')
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '报告生成失败'
+        console.error('Gemini report request failed:', message)
+        await ritualDelay
+
+        if (!cancelled) {
+          setReportParts({ section1: '', section2: '', section3: '' })
+          setReportError(message)
+          setCurrentView('result')
+        }
+      }
+    }
+
+    void runProcessing()
+
+    return () => {
+      cancelled = true
+    }
+  }, [basicInfo, currentView, reportRequestNonce, userAnswers])
+
+  const rerunReport = () => {
+    setReportParts({ section1: '', section2: '', section3: '' })
+    setReportError('')
+    setReportRequestNonce((prev) => prev + 1)
+    setCurrentView('processing')
   }
 
   const nextFromName = () => {
@@ -2094,6 +2138,9 @@ function App() {
           基础信息: basicInfo,
           userAnswers: nextAnswers,
         })
+        setReportParts({ section1: '', section2: '', section3: '' })
+        setReportError('')
+        setReportRequestNonce((prev) => prev + 1)
         setCurrentView('processing')
       } else {
         setCurrentQuestionIndex((prev) => prev + 1)
@@ -2165,9 +2212,15 @@ function App() {
             onAnswerSelect={handleQuizAnswer}
           />
         ) : currentView === 'processing' ? (
-          <ProcessingView onProcessComplete={() => setCurrentView('result')} />
+          <ProcessingView />
         ) : (
-          <ResultView basicInfo={basicInfo} userAnswers={userAnswers} onRestart={resetApp} />
+          <ResultView
+            basicInfo={basicInfo}
+            reportParts={reportParts}
+            reportError={reportError}
+            onRetry={rerunReport}
+            onRestart={resetApp}
+          />
         )}
       </AnimatePresence>
     </main>
