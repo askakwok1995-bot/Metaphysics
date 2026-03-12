@@ -759,6 +759,7 @@ type InputViewProps = {
   step: Step
   name: string
   nameError: string
+  isNameComposing: boolean
   gender: Gender
   calendarMode: CalendarMode
   lunarMonthType: LunarMonthType
@@ -771,6 +772,9 @@ type InputViewProps = {
   onBackHome: () => void
   onBackStep: () => void
   onNameChange: (value: string) => void
+  onNameCompositionStart: () => void
+  onNameCompositionEnd: (value: string) => void
+  onNameBlur: (value: string) => void
   onNextFromName: () => void
   onGenderSelect: (value: Gender) => void
   onCalendarModeChange: (value: CalendarMode) => void
@@ -787,6 +791,7 @@ function InputView({
   step,
   name,
   nameError,
+  isNameComposing,
   gender,
   calendarMode,
   lunarMonthType,
@@ -799,6 +804,9 @@ function InputView({
   onBackHome,
   onBackStep,
   onNameChange,
+  onNameCompositionStart,
+  onNameCompositionEnd,
+  onNameBlur,
   onNextFromName,
   onGenderSelect,
   onCalendarModeChange,
@@ -889,8 +897,13 @@ function InputView({
                     <input
                       value={name}
                       onChange={(event) => onNameChange(event.target.value)}
+                      onCompositionStart={onNameCompositionStart}
+                      onCompositionEnd={(event) => onNameCompositionEnd(event.currentTarget.value)}
+                      onBlur={(event) => onNameBlur(event.target.value)}
                       placeholder="请输入您的姓名"
-                      className="w-full border-b border-white/12 bg-transparent pb-4 text-center text-[1.45rem] tracking-[0.12em] text-zinc-100 placeholder:text-zinc-600 focus:border-amber-200/55 focus:outline-none caret-amber-200"
+                      className={`w-full border-b border-white/12 bg-transparent pb-4 text-center text-[1.45rem] text-zinc-100 placeholder:text-zinc-600 focus:border-amber-200/55 focus:outline-none caret-amber-200 ${
+                        isNameComposing ? 'tracking-[0.02em]' : 'tracking-[0.06em]'
+                      }`}
                     />
                   </div>
                   <div className="min-h-[1.25rem] text-center text-[11px] tracking-[0.08em] text-amber-200/70">
@@ -1926,6 +1939,7 @@ function App() {
   const [step, setStep] = useState<Step>(1)
   const [name, setName] = useState('')
   const [nameError, setNameError] = useState('')
+  const [isNameComposing, setIsNameComposing] = useState(false)
   const [gender, setGender] = useState<Gender>('')
   const [calendarMode, setCalendarMode] = useState<CalendarMode>('solar')
   const [lunarMonthType, setLunarMonthType] = useState<LunarMonthType>('regular')
@@ -2039,7 +2053,7 @@ function App() {
   }
 
   const nextFromName = () => {
-    const normalizedName = name.trim()
+    const normalizedName = normalizeNameValue(name).trim()
 
     if (!normalizedName) {
       setNameError('请输入您的姓名')
@@ -2061,13 +2075,38 @@ function App() {
     setStep(3)
   }
 
-  const handleNameChange = (value: string) => {
-    const normalizedValue = value.replace(/\s+/g, ' ').trimStart()
+  const normalizeNameValue = (value: string) => value.replace(/\s+/g, ' ').trimStart()
+
+  const syncNameValue = (value: string) => {
+    const normalizedValue = normalizeNameValue(value)
     setName(normalizedValue)
 
     if (nameError && normalizedValue.trim()) {
       setNameError('')
     }
+  }
+
+  const handleNameChange = (value: string) => {
+    const nextValue = isNameComposing ? value : normalizeNameValue(value)
+    setName(nextValue)
+
+    if (nameError && nextValue.trim()) {
+      setNameError('')
+    }
+  }
+
+  const handleNameCompositionStart = () => {
+    setIsNameComposing(true)
+  }
+
+  const handleNameCompositionEnd = (value: string) => {
+    setIsNameComposing(false)
+    syncNameValue(value)
+  }
+
+  const handleNameBlur = (value: string) => {
+    if (isNameComposing) return
+    syncNameValue(value)
   }
 
   const resetBirthDateParts = () => {
@@ -2163,6 +2202,7 @@ function App() {
             step={step}
             name={name}
             nameError={nameError}
+            isNameComposing={isNameComposing}
             gender={gender}
             calendarMode={calendarMode}
             lunarMonthType={lunarMonthType}
@@ -2175,6 +2215,9 @@ function App() {
             onBackHome={backHome}
             onBackStep={backStep}
             onNameChange={handleNameChange}
+            onNameCompositionStart={handleNameCompositionStart}
+            onNameCompositionEnd={handleNameCompositionEnd}
+            onNameBlur={handleNameBlur}
             onNextFromName={nextFromName}
             onGenderSelect={selectGender}
             onCalendarModeChange={(value) => {
